@@ -1,0 +1,9 @@
+*.o
+GPATH
+GRTAGS
+GSYMS
+GTAGS
+.deps
+*~
+gmon.out
+quic_test
