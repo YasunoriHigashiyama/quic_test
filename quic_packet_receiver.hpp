@@ -51,89 +51,51 @@ private:
 
 	quicly_context_t quic_context_;
 
-#if 0
-       ptls_save_ticket_t save_session_ticket_;
-       ptls_context_t tlsctx_;
+	void init_quic_context1(void) {
+		quic_context_ = quicly_spec_context;
+		quic_context_.tls = &tlsctx_;
 
-       ptls_key_exchange_algorithm_t *key_exchanges_[128];
-       ptls_cipher_suite_t *cipher_suites_[128];
+		stream_open_ = {&on_stream_open};
+		quic_context_.stream_open = &stream_open_;
 
-       ptls_on_client_hello_t on_client_hello_;
-       quicly_stream_open_t stream_open_;
-       quicly_closed_by_remote_t closed_by_remote_;
-       quicly_save_resumption_token_t save_resumption_token_;
-       quicly_generate_resumption_token_t generate_resumption_token_;
-#endif
+		closed_by_remote_ = {&on_closed_by_remote};
+		quic_context_.closed_by_remote = &closed_by_remote_;
 
-	   void init_quic_context1(void) {
-		   quic_context_ = quicly_spec_context;
-		   quic_context_.tls = &tlsctx_;
+		save_resumption_token_ = {save_resumption_token_cb};
+		quic_context_.save_resumption_token = &save_resumption_token_;
 
-		   stream_open_ = {&on_stream_open};
-		   quic_context_.stream_open = &stream_open_;
+		generate_resumption_token_ = {&on_generate_resumption_token};
+		quic_context_.generate_resumption_token = &generate_resumption_token_;
 
-		   closed_by_remote_ = {&on_closed_by_remote};
-		   quic_context_.closed_by_remote = &closed_by_remote_;
+		setup_session_cache(quic_context_.tls);
+		quicly_amend_ptls_context(quic_context_.tls);
 
-		   save_resumption_token_ = {save_resumption_token_cb};
-		   quic_context_.save_resumption_token = &save_resumption_token_;
+		const char *cid_key = NULL;
+		const char *cert_file = "server.cert";
+		load_private_key(quic_context_.tls, "server.key");
 
-		   generate_resumption_token_ = {&on_generate_resumption_token};
-		   quic_context_.generate_resumption_token = &generate_resumption_token_;
+		load_certificate_chain(quic_context_.tls, cert_file);
 
-		   setup_session_cache(quic_context_.tls);
-		   quicly_amend_ptls_context(quic_context_.tls);
+		static char random_key[17];
+		tlsctx_.random_bytes(random_key, sizeof(random_key) - 1);
+		cid_key = random_key;
 
-		   const char *cid_key = NULL;
-		   const char *cert_file = "server.cert";
-		   load_private_key(quic_context_.tls, "server.key");
-
-		   load_certificate_chain(quic_context_.tls, cert_file);
-
-		   static char random_key[17];
-		   tlsctx_.random_bytes(random_key, sizeof(random_key) - 1);
-		   cid_key = random_key;
-
-		   quic_context_.cid_encryptor = quicly_new_default_cid_encryptor(
-			   &ptls_openssl_bfecb,
-			   &ptls_openssl_aes128ecb,
-			   &ptls_openssl_sha256,
-			   ptls_iovec_init(cid_key, strlen(cid_key))
-			   );
+		quic_context_.cid_encryptor = quicly_new_default_cid_encryptor(
+			&ptls_openssl_bfecb,
+			&ptls_openssl_aes128ecb,
+			&ptls_openssl_sha256,
+			ptls_iovec_init(cid_key, strlen(cid_key))
+			);
 
 
-	quic_context_.transport_params.max_streams_bidi = 100;
-	quic_context_.transport_params.max_streams_uni = 100;
+		quic_context_.transport_params.max_streams_bidi = 100;
+		quic_context_.transport_params.max_streams_uni = 100;
 
-	quic_context_.transport_params.max_stream_data.bidi_local = 131072;
-	quic_context_.transport_params.max_stream_data.bidi_remote = 131072;
-	quic_context_.transport_params.max_stream_data.uni = 131072;
+		quic_context_.transport_params.max_stream_data.bidi_local = 131072;
+		quic_context_.transport_params.max_stream_data.bidi_remote = 131072;
+		quic_context_.transport_params.max_stream_data.uni = 131072;
 
-	quic_context_.initcwnd_packets = 13552;
-		   return;
-	   }
-
-	void open_qpack_encoder_stream(quicly_conn_t *conn) {
-		quicly_stream_t *stream;
-		int ret = quicly_open_stream(conn, &stream, 1);
-		if (ret == 0) {
-			uint8_t buf[1] = {0x2};
-			quicly_streambuf_egress_write(stream, buf, 1);
-			quicly_stream_sync_sendbuf(stream, 1);
-			return;
-		}
-		return;
-	}
-
-	void open_qpack_decoder_stream(quicly_conn_t *conn) {
-		quicly_stream_t *stream;
-		int ret = quicly_open_stream(conn, &stream, 1);
-		if (ret == 0) {
-			uint8_t buf[1] = {0x3};
-    		quicly_streambuf_egress_write(stream, buf, 1);
-			quicly_stream_sync_sendbuf(stream, 1);
-			return;
-		}
+		quic_context_.initcwnd_packets = 13552;
 		return;
 	}
 
@@ -147,8 +109,14 @@ private:
 		int ret = quicly_open_stream(conn, &stream, 1);
 		neosystem::wg::log::info(logger_)() << S_ << " send frame next: " << conn_public->local.uni.next_stream_id << ", stream_id: " << stream->stream_id;
 		if (ret == 0) {
-			uint8_t buf[] = {0x0, 0x4, 0x0};
-    		quicly_streambuf_egress_write(stream, buf, 3);
+			//uint8_t buf[] = {0x0, 0x4, 0x0};
+    		//quicly_streambuf_egress_write(stream, buf, 3);
+
+			uint8_t buf[] = {0x0, 0x4, 0x5, 0x1, 0x0, 0x0, 0x7, 0x0};
+			write_uint(buf + 4, 2, (uint16_t) 4096);
+			write_uint(buf + 7, 1, (uint8_t) 8);
+    		quicly_streambuf_egress_write(stream, buf, 8);
+
 			//quicly_streambuf_egress_shutdown(stream);
 			quicly_stream_sync_sendbuf(stream, 1);
 			neosystem::wg::log::info(logger_)() << S_ << "send settings frame (stream_id: " << stream->stream_id << ")";
@@ -333,15 +301,16 @@ private:
 					struct quic_connection_data *connection_data = new struct quic_connection_data();
 					auto self = std::enable_shared_from_this<self_type>::shared_from_this();
 					connection_data->receiver = self;
-					connection_data->session = std::make_shared<http3_session>(io_context_, conn, streambuf_cache_);
+					auto http3_session_ptr = std::make_shared<http3_session>(io_context_, conn, streambuf_cache_);
+					connection_data->session = http3_session_ptr;
 
 					struct _st_quicly_conn_public_t *conn_public = (struct _st_quicly_conn_public_t *) conn;
 					conn_public->data = connection_data;
 					neosystem::wg::log::info(logger_)() << S_ << "next: " << conn_public->local.bidi.next_stream_id;
 
-					send_settings_frame(conn);
-					open_qpack_encoder_stream(conn);
-					open_qpack_decoder_stream(conn);
+					http3_session_ptr->send_settings_frame();
+					http3_session_ptr->open_qpack_encoder_stream();
+					http3_session_ptr->open_qpack_decoder_stream();
 				} else {
 					assert(conn == NULL);
 					uint32_t thread_id = packet->cid.dest.plaintext.thread_id;
@@ -370,7 +339,7 @@ private:
 		}
 		for (size_t i = 0; i != num_conns_; ++i) {
 			if (quicly_get_first_timeout(conns_[i]) <= quic_context_.now->cb(quic_context_.now)) {
-				neosystem::wg::log::info(logger_)() << S_ << "quicly_get_first_timeout";
+				//neosystem::wg::log::info(logger_)() << S_ << "quicly_get_first_timeout";
 				if (send_pending(sender_endpoint, conns_[i]) != 0) {
 					struct quic_connection_data *data = (struct quic_connection_data *) ((struct _st_quicly_conn_public_t *) conns_[i])->data;
 					delete data;

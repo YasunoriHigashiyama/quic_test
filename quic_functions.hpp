@@ -17,7 +17,6 @@ extern ptls_key_exchange_algorithm_t *key_exchanges_[128];
 extern ptls_cipher_suite_t *cipher_suites_[128];
 extern ptls_on_client_hello_t on_client_hello_;
 
-//extern quicly_context_t quic_context_;
 extern quicly_stream_open_t stream_open_;
 extern quicly_closed_by_remote_t closed_by_remote_;
 extern quicly_save_resumption_token_t save_resumption_token_;
@@ -64,7 +63,7 @@ bool write_uint(uint8_t *p, std::size_t length, T value) {
 	T tmp = 0;
 	switch (sizeof(T)) {
 	case 1:
-		*p = value;
+		*p = (uint8_t) value;
 		break;
 	case 2:
 		tmp = htons((uint16_t) value);

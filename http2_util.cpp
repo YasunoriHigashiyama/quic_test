@@ -43,15 +43,15 @@ uint64_t get_int(int prefix, const uint8_t *p, std::size_t length, std::size_t& 
 	return result;
 }
 
-bool write_encode_int(uint8_t first, uint8_t *buf, std::size_t length, uint32_t value, int n, std::size_t& consume_length) {
+bool write_encode_int(uint8_t first, uint8_t *buf, std::size_t length, uint64_t value, int n, std::size_t& consume_length) {
 	consume_length = 0;
 	bool ret = write_encode_int(buf, length, value, n, consume_length);
 	buf[0] = first | buf[0];
 	return ret;
 }
 
-bool write_encode_int(uint8_t *buf, std::size_t length, uint32_t value, int n, std::size_t& consume_length) {
-	neosystem::wg::log::logger& logger_ = application::get_logger();
+bool write_encode_int(uint8_t *buf, std::size_t length, uint64_t value, int n, std::size_t& consume_length) {
+	//neosystem::wg::log::logger& logger_ = application::get_logger();
 	if (length == 0) {
 		return false;
 	}
@@ -60,7 +60,7 @@ bool write_encode_int(uint8_t *buf, std::size_t length, uint32_t value, int n, s
 		uint8_t u = (uint8_t) value;
 		*buf = u;
 		++consume_length;
-		neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length;
+		//neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length;
 		return true;
 	}
 
@@ -70,15 +70,15 @@ bool write_encode_int(uint8_t *buf, std::size_t length, uint32_t value, int n, s
 	--length;
 	++consume_length;
 
-	uint32_t i = value - max;
-	neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length << ", max: " << (uint32_t) max << ", i: " << i;
+	uint64_t i = value - max;
+	//neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length << ", max: " << (uint32_t) max << ", i: " << i;
 	for (; i >= 128; ) {
 		u = (uint8_t) (i % 128 + 128) | 0b10000000;
 		*buf = u;
 		++buf;
 		--length;
 		++consume_length;
-		neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length;
+		//neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length;
 		if (length == 0) {
 			return false;
 		}

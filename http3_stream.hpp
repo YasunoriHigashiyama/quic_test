@@ -13,6 +13,8 @@
 #include "http2_util.hpp"
 #include "http3_common.hpp"
 #include "http3_request_header.hpp"
+#include "http3_dynamic_headers_table.hpp"
+#include "write_queue.hpp"
 
 
 template<typename SessionType>
@@ -31,7 +33,10 @@ public:
 
 private:
 	neosystem::wg::log::logger& logger_;
-	int64_t stream_id_;
+
+	boost::asio::io_context& io_context_;
+
+	const int64_t stream_id_;
 	session_type::ptr_type http3_session_;
 	quicly_stream_t *stream_;
 
@@ -45,12 +50,17 @@ private:
 	neosystem::http::streambuf_cache::buf_type header_buf_;
 	neosystem::http3::http3_request_header request_header_;
 
-	boost::asio::io_context& io_context_;
 	boost::asio::posix::stream_descriptor descriptor_;
+	boost::asio::posix::stream_descriptor upload_descriptor_;
 	neosystem::http::streambuf_cache::buf_type file_read_buf_;
 	std::size_t file_size_;
 	int32_t current_index_;
 	int32_t last_index_;
+
+	neosystem::http3::http3_dynamic_headers_table& headers_;
+	bool is_dynamic_encode_;
+
+	neosystem::http::write_queue write_queue_;
 
 	bool receive_frame_header(const uint8_t *p, std::size_t length, std::size_t& consume_length) {
 		std::size_t frame_header_size = 0;
@@ -88,8 +98,6 @@ private:
 			consume_length += remain_frame_payload_length_;
 			remain_frame_payload_length_ = frame_payload_length_ = 0;
 			is_frame_header_received_ = false;
-
-			neosystem::wg::log::info(logger_)() << S_ << "http3_stream  consume_length: " << consume_length;
 			return true;
 		}
 		consume_length += length;
@@ -105,20 +113,82 @@ private:
 		length -= consume_length;
 		p += consume_length;
 
-		bool s = (*p) % 0b10000000;
+		bool s = (*p) & 0b10000000;
 
 		uint64_t delta_base = neosystem::http2::get_int(7, p, length, consume_length);
 		length -= consume_length;
 		p += consume_length;
 
-		neosystem::wg::log::info(logger_)() << S_ << "http3_stream  required_insert_count: " << required_insert_count
-			<< ", s: " << (s ? "true" : "false") << ", delta_base: " << delta_base;
+		std::size_t decoded_required_insert_count = decode_required_insert_count(required_insert_count);
 
-		request_header_.parse(p, length);
+		uint64_t base = 0;
+		if (s == false) {
+			base = decoded_required_insert_count + delta_base;
+		} else {
+			base = decoded_required_insert_count - delta_base - 1;
+		}
+
+		neosystem::wg::log::info(logger_)() << S_ << "http3_stream  required_insert_count: " << required_insert_count
+			<< ", decode: " << decoded_required_insert_count
+			<< ", s: " << (s ? "true" : "false") << ", delta_base: " << delta_base << ", base: " << base;
+
+		is_dynamic_encode_ = (required_insert_count == 0) ? false : true;
+
+		if (headers_.get_total() < decoded_required_insert_count) {
+			neosystem::wg::log::info(logger_)() << S_ << "register waiting list";
+			auto self = std::enable_shared_from_this<self_type>::shared_from_this();
+			http3_session_->register_waiting_list(self);
+			return;
+		}
+		neosystem::wg::log::info(logger_)() << S_ << "check OK (total: " << headers_.get_total() << ", decoded_required_insert_count: " << decoded_required_insert_count << ")";
+
+		request_header_.parse(p, length, headers_, base);
 		return;
 	}
 
-	void response_file(std::filesystem::path& request_path) {
+	std::size_t decode_required_insert_count(std::size_t encoded_insert_count) {
+		auto max_entries = 4096 / 32;
+		auto full_range = 2 * max_entries;
+		if (encoded_insert_count == 0) {
+			return 0;
+		}
+		if (encoded_insert_count > full_range) {
+			return -1;
+		}
+		auto max_value = headers_.get_total() + max_entries;
+		auto max_wrapped = (max_value / full_range) * full_range;
+		auto req_insert_count = max_wrapped + encoded_insert_count - 1;
+
+		if (req_insert_count > max_value) {
+			if (req_insert_count <= full_range) {
+				return -1;
+			}
+			req_insert_count -= full_range;
+		}
+
+		if (req_insert_count == 0) {
+			return -1;
+		}
+		return req_insert_count;
+	}
+
+	void upload_file(const std::filesystem::path& request_path) {
+		int fd;
+		if ((fd = open(request_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK)) == -1) {
+			neosystem::wg::log::error(logger_)() << S_ << "open error (request_pat: " << request_path << ")";
+			response_404();
+			return;
+		}
+
+		upload_descriptor_.assign(fd);
+		upload_descriptor_.non_blocking(true);
+
+		// TODO
+		response_404();
+		return;
+	}
+
+	void response_file(const std::filesystem::path& request_path) {
 		int fd;
 		if ((fd = open(request_path.c_str(), O_RDONLY | O_NONBLOCK)) == -1) {
 			neosystem::wg::log::error(logger_)() << S_ << "open error (request_pat: " << request_path << ")";
@@ -151,6 +221,7 @@ private:
 		file_read_buf_ = streambuf_cache_.get();
 		file_read_buf_->prepare(16000);
 		boost::asio::async_read(descriptor_, *file_read_buf_, boost::asio::transfer_at_least(1), [this, self, is_first](const boost::system::error_code& error, std::size_t) {
+			neosystem::wg::log::info(logger_)() << S_ << "response data frame: " + file_size_;
 			if (is_first) {
 				response_data_frame(file_size_);
 			}
@@ -158,11 +229,12 @@ private:
 				if (error == boost::asio::error::eof) {
 					// complete
 					response_data(std::move(file_read_buf_), true);
-					//is_response_complete_ = true;
+					if (is_dynamic_encode_) {
+						http3_session_->send_seection_acknowledgment(stream_id_);
+					}
 				} else {
 					neosystem::wg::log::error(logger_)() << S_ << "error: " << error.message();
 					response_data(std::move(file_read_buf_), true);
-					//is_response_complete_ = true;
 				}
 				return;
 			}
@@ -214,6 +286,7 @@ private:
 		return;
 	}
 
+	// TODO 作りがいまいちなので直す
 	void response_200(std::size_t content_length) {
 		std::size_t length = 4096, consume_length;
 		uint8_t buf[4096];
@@ -226,7 +299,6 @@ private:
 
 		const char *name = ":status";
 		neosystem::http2::write_encode_int(0b00100000, p, length, (uint32_t) strlen(name), 3, consume_length);
-		neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length;
 		p += consume_length;
 		length -= consume_length;
 		std::memcpy(p, name, strlen(name));
@@ -235,7 +307,6 @@ private:
 
 		const char *value = "200";
 		neosystem::http2::write_encode_int(0x0, p, length, (uint32_t) strlen(value), 7, consume_length);
-		neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length;
 		p += consume_length;
 		length -= consume_length;
 		std::memcpy(p, value, strlen(value));
@@ -244,7 +315,6 @@ private:
 
 		name = "content-length";
 		neosystem::http2::write_encode_int(0b00100000, p, length, (uint32_t) strlen(name), 3, consume_length);
-		neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length;
 		p += consume_length;
 		length -= consume_length;
 		std::memcpy(p, name, strlen(name));
@@ -254,7 +324,6 @@ private:
 		std::string content_length_value = std::to_string(content_length);
 		std::size_t header_value_length = content_length_value.size();
 		neosystem::http2::write_encode_int(0x0, p, length, (uint32_t) header_value_length, 7, consume_length);
-		neosystem::wg::log::info(logger_)() << S_ << "consume_length: " << consume_length;
 		p += consume_length;
 		length -= consume_length;
 		std::memcpy(p, content_length_value.c_str(), header_value_length);
@@ -262,10 +331,7 @@ private:
 		length -= header_value_length;
 
 		buf[1] = 4096 - length - 2;
-		neosystem::wg::log::info(logger_)() << S_ << "send length: " << (4096 - length);
     	quicly_streambuf_egress_write(stream_, buf, 4096 - length);
-
-		//quicly_streambuf_egress_shutdown(stream_);
 		return;
 	}
 
@@ -325,10 +391,29 @@ private:
 
 	void response(void) {
 
+		neosystem::wg::log::info(logger_)() << S_
+			<< "path: " << request_header_.get_request_path()
+			<< ", method: '" << request_header_.get_request_method() << "'"
+			<< ", " << (request_header_.get_request_path() == "/upload")
+			<< ", " << (request_header_.get_request_method() == "POST")
+			;
+		if (request_header_.get_request_path() == "/upload" && request_header_.get_request_method() == "POST") {
+			std::filesystem::path root("/var/www/html/upload/");
+			std::filesystem::path tmp_path("/var/www/html/upload/tmp.dat");
+			auto request_path = std::filesystem::weakly_canonical(tmp_path);
+			neosystem::wg::log::info(logger_)() << S_ << "tmp_path: " << tmp_path << ", request_path: " << request_path;
+			if (request_path.native().starts_with(root.native()) == false) {
+				response_404();
+				return;
+			}
+			upload_file(request_path);
+			return;
+		}
+
 		std::filesystem::path root("/var/www/html/");
 		std::filesystem::path tmp_path("/var/www/html/" + request_header_.get_request_path());
 		auto request_path = std::filesystem::weakly_canonical(tmp_path);
-		neosystem::wg::log::info(logger_)() << S_ << "tmp_path: " << tmp_path << ", request_path: " << request_path;
+		//neosystem::wg::log::info(logger_)() << S_ << "tmp_path: " << tmp_path << ", request_path: " << request_path;
 		if (request_path.native().starts_with(root.native()) == false) {
 			response_404();
 			return;
@@ -347,6 +432,57 @@ private:
 			}
 		}
 		response_file(request_path);
+		return;
+	}
+
+	bool receive_data_frame_payload(const uint8_t *p, std::size_t length, std::size_t& consume_length) {
+		auto buf = streambuf_cache_.get();
+		if (remain_frame_payload_length_ <= length) {
+			std::ostream os(&(*buf));
+			os.write((const char *) p, remain_frame_payload_length_);
+
+			consume_length += remain_frame_payload_length_;
+			remain_frame_payload_length_ = frame_payload_length_ = 0;
+		} else {
+			std::ostream os(&(*buf));
+			os.write((const char *) p, length);
+			consume_length += length;
+			remain_frame_payload_length_ -= length;
+		}
+
+		if (!upload_descriptor_.is_open()) {
+			return true;
+		}
+
+		async_write_file(buf);
+		return false;
+	}
+
+	void async_write_file_impl(void) {
+		auto self = std::enable_shared_from_this<self_type>::shared_from_this();
+		auto *buf = write_queue_.front();
+		boost::asio::async_write(upload_descriptor_, *buf, [this, self](const boost::system::error_code error, std::size_t s) {
+			write_queue_.pop(streambuf_cache_);
+			if (error) {
+				neosystem::wg::log::error(logger_)() << S_ << " Error: " << error.message();
+				return;
+			}
+			neosystem::wg::log::info(logger_)() << S_ << "write complete (size: " << s << ")";
+			if (write_queue_.is_empty()) {
+				// 書き込み待ちなし
+				return;
+			}
+			async_write_file_impl();
+			return;
+		});
+		return;
+	}
+
+	void async_write_file(std::unique_ptr<boost::asio::streambuf>& buf) {
+		if (write_queue_.push(buf) == false) {
+			return;
+		}
+		async_write_file_impl();
 		return;
 	}
 
@@ -394,6 +530,9 @@ private:
 			case neosystem::http3::frame_type::headers:
 				result = receive_headers_frame_payload(p + consume_length, length - consume_length, consume_length);
 				break;
+			case neosystem::http3::frame_type::data:
+				result = receive_data_frame_payload(p + consume_length, length - consume_length, consume_length);
+				break;
 			default:
 				result = false;
 				break;
@@ -407,9 +546,11 @@ private:
 
 public:
 	http3_stream(int64_t stream_id, session_type::ptr_type& http3_session, quicly_stream_t *stream)
-		: logger_(application::get_logger()), stream_id_(stream_id), http3_session_(http3_session),
+		: logger_(application::get_logger()), io_context_(http3_session->get_io_context()),
+		stream_id_(stream_id), http3_session_(http3_session), stream_(stream),
 		streambuf_cache_(http3_session->get_streambuf_cache()),
-		is_frame_header_received_(false), stream_(stream), io_context_(http3_session->get_io_context()), descriptor_(io_context_) {
+		is_frame_header_received_(false), descriptor_(io_context_), upload_descriptor_(io_context_),
+		headers_(http3_session->get_headers()), is_dynamic_encode_(false) {
 	}
 
 	void receive(const uint8_t *p, std::size_t length) {
@@ -458,6 +599,47 @@ public:
 			quicly_streambuf_egress_shutdown(stream_);
 		}
 		return;
+	}
+
+	bool parse_headers_callback(void) {
+		const uint8_t *p = boost::asio::buffer_cast<const uint8_t *>(header_buf_->data());
+		std::size_t length = header_buf_->size(), consume_length = 0;
+
+		uint64_t required_insert_count = neosystem::http2::get_int(8, p, length, consume_length);
+		length -= consume_length;
+		p += consume_length;
+
+		bool s = (*p) & 0b10000000;
+
+		uint64_t delta_base = neosystem::http2::get_int(7, p, length, consume_length);
+		length -= consume_length;
+		p += consume_length;
+
+		std::size_t decoded_required_insert_count = decode_required_insert_count(required_insert_count);
+
+		uint64_t base = 0;
+		if (s == false) {
+			base = decoded_required_insert_count + delta_base;
+		} else {
+			base = decoded_required_insert_count - delta_base - 1;
+		}
+
+		neosystem::wg::log::info(logger_)() << S_ << "http3_stream  required_insert_count: " << required_insert_count
+			<< ", decode: " << decoded_required_insert_count
+			<< ", s: " << (s ? "true" : "false") << ", delta_base: " << delta_base << ", base: " << base;
+
+		is_dynamic_encode_ = (required_insert_count == 0) ? false : true;
+
+		if (headers_.get_total() < decoded_required_insert_count) {
+			neosystem::wg::log::info(logger_)() << S_ << "register waiting list";
+			auto self = std::enable_shared_from_this<self_type>::shared_from_this();
+			http3_session_->register_waiting_list(self);
+			return false;
+		}
+		neosystem::wg::log::info(logger_)() << S_ << "check OK (total: " << headers_.get_total() << ", decoded_required_insert_count: " << decoded_required_insert_count << ")";
+
+		request_header_.parse(p, length, headers_, base);
+		return true;
 	}
 };
 

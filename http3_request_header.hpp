@@ -9,6 +9,7 @@
 #include "application.hpp"
 #include "http3_static_headers_table.hpp"
 #include "http2_huffman.hpp"
+#include "http3_dynamic_headers_table.hpp"
 
 
 namespace neosystem {
@@ -180,7 +181,7 @@ public:
 	http3_request_header(void) : content_length_(0), has_invalid_request_header_(false) {
 	}
 
-	uint32_t parse(const uint8_t *p, std::size_t length) {
+	uint32_t parse(const uint8_t *p, std::size_t length, neosystem::http3::http3_dynamic_headers_table& headers, std::size_t base) {
 		//std::size_t consume_length;
 		//const http::header *header_ptr;
 		std::size_t remain = length;
@@ -203,7 +204,7 @@ public:
 				}
 				bool is_static_table = (*p & 0b01000000) ? true : false;
 				if (is_static_table) {
-					const neosystem::http::header *header = neosystem::http3::find_http3_static_headers_table(tmp);
+					const neosystem::http::header *header = neosystem::http3::find_http3_static_headers_table((uint32_t) tmp);
 					neosystem::wg::log::info(logger_)() << S_ << header->name << ": " << header->value;
 					if (is_valid_header(allow_pseudo_header, *header) == false) {
 						// TODO
@@ -214,8 +215,20 @@ public:
 						return 0;
 					}
 				} else {
-					// TODO
-					neosystem::wg::log::info(logger_)() << S_ << "index: " << tmp << ", consume_length: " << consume_length << ", T: " << (*p & 0b01000000);
+					// dynamic table
+					//neosystem::wg::log::info(logger_)() << S_ << "index: " << tmp << ", consume_length: " << consume_length << ", T: " << (*p & 0b01000000);
+					const auto dynamic_index = base - tmp - 1;
+					const auto *header = headers.get_header(dynamic_index);
+					if (header != nullptr) {
+						neosystem::wg::log::info(logger_)() << S_ << "dynamic table index: " << tmp << ", base: " << base << " (" << header->name << ": " << header->value << ")";
+						// TODO
+						if (set_header(cookie_header, *header) == false) {
+							// TODO
+							return 0;
+						}
+					} else {
+						neosystem::wg::log::info(logger_)() << S_ << "unexpected index: " << dynamic_index;
+					}
 				}
 				p += consume_length;
 				length -= consume_length;
@@ -230,6 +243,17 @@ public:
 				p += consume_length;
 				length -= consume_length;
 				// TODO
+				const auto *header = headers.get_header(base + tmp);
+				if (header != nullptr) {
+					neosystem::wg::log::info(logger_)() << S_ << "dynamic table " << header->name << ": " << header->value;
+					// TODO
+					if (set_header(cookie_header, *header) == false) {
+						// TODO
+						return 0;
+					}
+				} else {
+					neosystem::wg::log::info(logger_)() << S_ << "unexpected index: " << (base + tmp);
+				}
 			} else if (is_literal_field_line_with_name_reference(*p)) {
 				std::size_t consume_length = 0;
 				uint64_t tmp = neosystem::http2::get_int(4, p, length, consume_length);
@@ -240,7 +264,7 @@ public:
 				bool is_static_table = (*p & 0b00010000) ? true : false;
 				neosystem::http::header h;
 				if (is_static_table) {
-					const neosystem::http::header *header = neosystem::http3::find_http3_static_headers_table(tmp);
+					const neosystem::http::header *header = neosystem::http3::find_http3_static_headers_table((uint32_t) tmp);
 					neosystem::wg::log::info(logger_)() << S_ << header->name << ": " << header->value;
 					h.name = header->name;
 				} else {
@@ -399,6 +423,7 @@ public:
 	const http::headers_type& get_headers(void) const { return headers_; }
 	const char *get_request_method_as_str(void) const { return method_.c_str(); }
 	const char *get_request_method_as_lower_str(void) const { return method_.c_str(); }
+	const std::string& get_request_method(void) const { return method_; }
 	//http::http_method_type get_request_method(void) const { return http::str_to_method(method_); }
 	const std::string& get_request_path(void) const { return path_; }
 	const std::string& get_host(void) const { return authority_; }

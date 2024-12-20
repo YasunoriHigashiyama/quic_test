@@ -27,7 +27,6 @@ void udp_server::async_receive_from(void) {
 				async_receive_from();
 				return;
 			}
-			neosystem::wg::log::info(logger_)() << S_ << "recv: " << bytes_recvd;
 
 			if (index_ >= packet_receiver_list_->size()) {
 				index_ = 0;
