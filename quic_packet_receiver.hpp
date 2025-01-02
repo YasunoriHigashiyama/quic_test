@@ -235,7 +235,7 @@ private:
 					  neosystem::http::arraybuf_cache::buf_type buf,
 					  size_t bytes_recved,
 					  const packet_vector_ptr_type& packets,
-					  uint32_t new_thread_id) {
+					  const uint32_t new_thread_id) {
 		struct sockaddr *sender = (struct sockaddr *) sender_endpoint.data();
 		quicly_conn_t *conn = NULL;
 		neosystem::wg::log::info(logger_)() << S_ << "receive_impl() (size: " << packets->size() << ", new_thread_id: " << new_thread_id << ")";
@@ -339,7 +339,6 @@ private:
 		}
 		for (size_t i = 0; i != num_conns_; ++i) {
 			if (quicly_get_first_timeout(conns_[i]) <= quic_context_.now->cb(quic_context_.now)) {
-				//neosystem::wg::log::info(logger_)() << S_ << "quicly_get_first_timeout";
 				if (send_pending(sender_endpoint, conns_[i]) != 0) {
 					struct quic_connection_data *data = (struct quic_connection_data *) ((struct _st_quicly_conn_public_t *) conns_[i])->data;
 					delete data;
@@ -350,8 +349,6 @@ private:
 					--i;
 					--num_conns_;
 				}
-			} else {
-				neosystem::wg::log::info(logger_)() << S_ << "quicly_get_first_timeout is false";
 			}
 		}
 		return;
@@ -369,7 +366,7 @@ public:
 		neosystem::wg::log::info(logger_)() << S_ << "init (thread_id: " << thread_id << ")";
 	}
 
-	void forward_receive(const boost::asio::ip::udp::endpoint& sender_endpoint, neosystem::http::arraybuf_cache::buf_type buf, size_t bytes_recvd, uint32_t new_thread_id) {
+	void forward_receive(const boost::asio::ip::udp::endpoint& sender_endpoint, neosystem::http::arraybuf_cache::buf_type buf, size_t bytes_recvd, const uint32_t new_thread_id) {
 		neosystem::wg::log::info(logger_)() << S_ << "forward receive packet (bytes_recvd: " << bytes_recvd << ")";
 		boost::asio::post(io_context_, [this, sender_endpoint, b = std::move(buf), bytes_recvd, new_thread_id] mutable {
 			size_t rret = bytes_recvd;

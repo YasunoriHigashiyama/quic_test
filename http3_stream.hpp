@@ -221,7 +221,7 @@ private:
 		file_read_buf_ = streambuf_cache_.get();
 		file_read_buf_->prepare(16000);
 		boost::asio::async_read(descriptor_, *file_read_buf_, boost::asio::transfer_at_least(1), [this, self, is_first](const boost::system::error_code& error, std::size_t) {
-			neosystem::wg::log::info(logger_)() << S_ << "response data frame: " + file_size_;
+			neosystem::wg::log::info(logger_)() << S_ << "response data frame: " << file_size_;
 			if (is_first) {
 				response_data_frame(file_size_);
 			}

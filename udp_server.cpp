@@ -79,7 +79,10 @@ void udp_server::forward_packet(uint32_t thread_id, const boost::asio::ip::udp::
 								neosystem::http::arraybuf_cache::buf_type buf, size_t bytes_recved, const std::shared_ptr<std::vector<std::shared_ptr<quicly_decoded_packet_t>>>& packets,
 								uint32_t new_thread_id) {
 	boost::asio::post(io_context_, [this, thread_id, sender_endpoint, b = std::move(buf), packets, bytes_recved, new_thread_id] mutable {
-		if (thread_id < 0 || thread_id - 1 >= packet_receiver_list_->size()) {
+		if (0 > thread_id - 1 || thread_id - 1 >= packet_receiver_list_->size()) {
+			if (0 > new_thread_id || new_thread_id >= packet_receiver_list_->size()) {
+				new_thread_id = 0;
+			}
 			neosystem::wg::log::info(logger_)() << S_ << "unexpected thread ID (threadId: " << thread_id << ", new_thread_id: " << new_thread_id << ", to: " << (*packet_receiver_list_)[new_thread_id]->get_thread_id() << ")";
 			(*packet_receiver_list_)[new_thread_id]->forward_receive(sender_endpoint, std::move(b), bytes_recved, new_thread_id + 1);
 			return;
